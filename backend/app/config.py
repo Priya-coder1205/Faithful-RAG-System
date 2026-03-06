@@ -7,9 +7,15 @@ from core.ingestion import DocumentIngestor
 class EngineState:
     def __init__(self):
         self.ingestor = DocumentIngestor()
-        self.embedder = EmbeddingModel()
+        self._embedder = None
         self.retriever = VectorRetriever()
         self.is_index_built = False
+
+    @property
+    def embedder(self):
+        if self._embedder is None:
+            self._embedder = EmbeddingModel()
+        return self._embedder
 
 
 engine = EngineState()
