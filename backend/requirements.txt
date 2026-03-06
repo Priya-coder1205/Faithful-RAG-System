@@ -5,3 +5,5 @@ faiss-cpu
 numpy
 pydantic
 python-multipart
+PyPDF2
+scikit-learn
