@@ -63,6 +63,11 @@ User Query
 - TailwindCSS
 - Axios (API Communication)
 
+## Live Demo
+
+Frontend:
+https://faithful-rag-system.vercel.app
+
 ### Verification & Trust Layer
 - Cosine similarity–based claim validation
 - Support ratio computation
