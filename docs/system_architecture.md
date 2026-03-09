@@ -27,6 +27,21 @@ Structured Response (Answer + Citations + Confidence)
 
 ## Components
 
+### Document Ingestion
+Uploads PDF documents and converts them into text chunks.
+
+### Embedding Model
+Uses sentence-transformer models to generate vector embeddings.
+
+### Hybrid Retrieval
+Combines BM25 keyword search with vector similarity search.
+
+### Generator
+Generates answers strictly grounded in retrieved context.
+
+### Verifier
+Checks whether the generated answer is supported by the retrieved evidence.
+
 ### Frontend
 - Built with React and Vite
 - Provides user interface for document upload and question answering
