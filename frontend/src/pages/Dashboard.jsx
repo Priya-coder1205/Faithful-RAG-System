@@ -5,7 +5,7 @@ import QueryCard from "../components/QueryCard";
 import AnswerCard from "../components/AnswerCard";
 import SidebarLayout from "../components/SidebarLayout";
 
-const API_BASE = "http://127.0.0.1:8000";
+const API_BASE = "https://24x7captain-faithful-rag-system.hf.space";
 
 function normalizeConfidence(value) {
   if (typeof value !== "number" || Number.isNaN(value)) return 0;
