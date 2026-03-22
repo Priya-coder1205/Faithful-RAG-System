@@ -1,4 +1,6 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, Request, UploadFile, File, HTTPException
+from fastapi import requests
+from security.rate_limit import limiter
 import os
 import shutil
 import numpy as np
@@ -10,6 +12,7 @@ from core.generator import GroundedGenerator
 from core.verifier import AnswerVerifier
 from core.scorer import ConfidenceScorer
 from core.hybrid import HybridRetriever
+
 
 router = APIRouter()
 generator = GroundedGenerator()
@@ -38,9 +41,9 @@ async def upload_document(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.post("/query", response_model=QueryResponse)
-async def query_system(request: QueryRequest):
+@limiter.limit("10/minute")  
+async def query_system(request: Request, payload: QueryRequest):
 
     if not engine.is_index_built:
         raise HTTPException(
@@ -51,7 +54,7 @@ async def query_system(request: QueryRequest):
     # -------------------------------
     # STEP 1: Dense Retrieval (FAISS)
     # -------------------------------
-    query_embedding = engine.embedder.encode([request.question])
+    query_embedding = engine.embedder.encode([payload.question])
     dense_results = engine.retriever.search(query_embedding, top_k=5)
 
     if not dense_results:
@@ -61,7 +64,7 @@ async def query_system(request: QueryRequest):
     # STEP 2: Keyword Retrieval (BM25)
     # -------------------------------
     hybrid_engine = HybridRetriever(engine.retriever.documents)
-    keyword_results = hybrid_engine.keyword_search(request.question, top_k=5)
+    keyword_results = hybrid_engine.keyword_search(payload.question, top_k=5)
 
     # -------------------------------
     # STEP 3: Hybrid Score Fusion
@@ -105,7 +108,7 @@ async def query_system(request: QueryRequest):
     # -------------------------------
     # STEP 5: Generation
     # -------------------------------
-    answer = generator.generate_answer(request.question, contexts)
+    answer = generator.generate_answer(payload.question, contexts)
 
     # -------------------------------
     # STEP 6: Sentence Verification
