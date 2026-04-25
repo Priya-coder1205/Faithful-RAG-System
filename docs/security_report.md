@@ -19,6 +19,8 @@ Implemented endpoints:
 - POST /auth/signup
 - POST /auth/login
 
+OAuth2 Password Flow is used for secure login via Swagger UI.
+
 This ensures that users must register and login before accessing protected system functionality.
 
 ---
@@ -44,7 +46,13 @@ Implemented using:
 
 - python-jose
 
-This token is used for protected route access and improves authorization control.
+Details:
+
+- Algorithm: HS256
+- Token contains user identity (`sub`)
+- Used as: `Authorization: Bearer <token>`
+
+This token is required to access protected routes such as `/query`.
 
 ---
 
@@ -55,6 +63,10 @@ Rate limiting has been added to prevent abuse and spam attacks.
 Implemented using:
 
 - slowapi
+
+Configuration:
+
+- Limit: 10 requests per minute on `/query`
 
 This protects the backend from excessive requests and improves API stability.
 
@@ -72,15 +84,53 @@ This improves backend reliability and production readiness.
 
 ---
 
+### 6. Authorization Enforcement
+
+Protected endpoints require valid authentication tokens.
+
+Example:
+
+- `/query` → requires JWT token
+
+Unauthorized users receive:
+
+- 401 Not Authenticated
+
+This ensures only verified users can access sensitive operations.
+
+---
+
+### 7. Error Handling
+
+Proper error handling is implemented:
+
+- 400 → Bad request (e.g., index not built)
+- 401 → Unauthorized access
+- 500 → Internal server error
+
+This improves debugging and system stability.
+
+---
+
+### 8. Token Security
+
+- Secret key stored using environment variable (`JWT_SECRET_KEY`)
+- Tokens are signed securely
+- Prevents unauthorized token generation
+
+---
+
 ## Future Improvements
 
 Planned improvements include:
 
 - role-based access control (admin/user)
-- SQL injection prevention using secure database queries
+- SQL injection prevention using parameterized queries
 - CSRF protection
 - XSS prevention
 - secure headers configuration
+- token expiration and refresh tokens
+- database integration instead of in-memory storage
 
 These will further improve enterprise-level security.
 
