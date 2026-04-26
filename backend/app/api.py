@@ -199,6 +199,12 @@ async def query_system(
         citations=citations,
         confidence_score=confidence,
         confidence_level=level,
+        consistency_score=support_ratio,
+        consistency_level=(
+            "HIGH" if support_ratio >= 0.75 else
+            "MEDIUM" if support_ratio >= 0.45 else
+            "LOW"
+        ),
         reason=f"Support ratio: {support_ratio:.2f}, Avg retrieval: {avg_retrieval:.2f}",
         contradictions_detected=contradiction_detected,
         claim_support=detailed_support

@@ -23,3 +23,5 @@ class QueryResponse(BaseModel):
     reason: str
     contradictions_detected: bool
     claim_support: Optional[List[ClaimSupport]] = None
+    consistency_score: float
+    consistency_level: str
