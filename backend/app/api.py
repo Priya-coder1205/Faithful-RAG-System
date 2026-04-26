@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Request, UploadFile, File, HTTPException
-from fastapi import requests
+from fastapi import APIRouter, Request, UploadFile, File, HTTPException, Depends
+from fastapi.security import OAuth2PasswordBearer
+from jose import jwt, JWTError
 from security.rate_limit import limiter
 import os
 import shutil
@@ -14,12 +15,50 @@ from core.scorer import ConfidenceScorer
 from core.hybrid import HybridRetriever
 
 
+# -------------------------------
+# JWT CONFIG
+# -------------------------------
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-this-secret-in-production")
+ALGORITHM = "HS256"
+
+
+def verify_token(token: str = Depends(oauth2_scheme)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+
 router = APIRouter()
 generator = GroundedGenerator()
 
 
+# -------------------------------
+# UPLOAD ENDPOINT (UNCHANGED)
+# -------------------------------
 @router.post("/upload")
 async def upload_document(file: UploadFile = File(...)):
+    # -------------------------------
+    # File Validation (NEW)
+    # -------------------------------
+
+    # Allowed file types
+    allowed_types = ["application/pdf", "text/plain"]
+
+    if file.content_type not in allowed_types:
+        raise HTTPException(status_code=400, detail="Unsupported file type. Only PDF and TXT allowed.")
+
+    # File size check (max 5MB)
+    file.file.seek(0, 2)
+    size = file.file.tell()
+    file.file.seek(0)
+
+    if size > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large. Max size is 5MB.")
+    
     try:
         os.makedirs("data", exist_ok=True)
         file_path = os.path.join("data", file.filename)
@@ -41,9 +80,17 @@ async def upload_document(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# -------------------------------
+# 🔐 PROTECTED QUERY ENDPOINT
+# -------------------------------
 @router.post("/query", response_model=QueryResponse)
-@limiter.limit("10/minute")  
-async def query_system(request: Request, payload: QueryRequest):
+@limiter.limit("10/minute")
+async def query_system(
+    request: Request,
+    payload: QueryRequest,
+    user=Depends(verify_token)   # 👈 THIS IS THE MAIN CHANGE
+):
 
     if not engine.is_index_built:
         raise HTTPException(
@@ -51,44 +98,33 @@ async def query_system(request: Request, payload: QueryRequest):
             detail="Index not built yet. Upload document first."
         )
 
-    # -------------------------------
-    # STEP 1: Dense Retrieval (FAISS)
-    # -------------------------------
+    # STEP 1: Dense Retrieval
     query_embedding = engine.embedder.encode([payload.question])
     dense_results = engine.retriever.search(query_embedding, top_k=5)
 
     if not dense_results:
         raise HTTPException(status_code=400, detail="No relevant documents found.")
 
-    # -------------------------------
-    # STEP 2: Keyword Retrieval (BM25)
-    # -------------------------------
+    # STEP 2: BM25
     hybrid_engine = HybridRetriever(engine.retriever.documents)
     keyword_results = hybrid_engine.keyword_search(payload.question, top_k=5)
 
-    # -------------------------------
-    # STEP 3: Hybrid Score Fusion
-    # -------------------------------
+    # STEP 3: Fusion
     combined_scores = {}
 
-    # Add dense scores
     for doc, score in dense_results:
         combined_scores[doc] = combined_scores.get(doc, 0) + score
 
-    # Add scaled BM25 scores
     for doc, score in keyword_results:
         combined_scores[doc] = combined_scores.get(doc, 0) + (score * 0.01)
 
-    # Sort combined results
     hybrid_results = sorted(
         combined_scores.items(),
         key=lambda x: x[1],
         reverse=True
     )[:5]
 
-    # -------------------------------
-    # STEP 4: Reranking (Cosine)
-    # -------------------------------
+    # STEP 4: Reranking
     query_vec = query_embedding[0]
 
     reranked = []
@@ -105,37 +141,27 @@ async def query_system(request: Request, payload: QueryRequest):
     contexts = [doc for doc, score in results]
     retrieval_scores = [score for doc, score in results]
 
-    # -------------------------------
     # STEP 5: Generation
-    # -------------------------------
     answer = generator.generate_answer(payload.question, contexts)
 
-    # -------------------------------
-    # STEP 6: Sentence Verification
-    # -------------------------------
+    # STEP 6: Verification
     verifier = AnswerVerifier()
     support_ratio = verifier.verify(answer, contexts)
     detailed_support = verifier.verify_detailed(answer, contexts)
 
-    # -------------------------------
-    # STEP 7: Base Confidence
-    # -------------------------------
+    # STEP 7: Confidence
     scorer = ConfidenceScorer()
     confidence = scorer.score(retrieval_scores, support_ratio)
 
     avg_retrieval = sum(retrieval_scores) / len(retrieval_scores)
 
-    # Weak retrieval penalty
     if avg_retrieval < 0.25:
         confidence *= 0.5
 
-    # Insufficient info override
     if "Insufficient information" in answer:
         confidence = 0.1
 
-    # -------------------------------
-    # STEP 8: Contradiction Detection
-    # -------------------------------
+    # STEP 8: Contradiction
     contradiction_detected = False
 
     if len(contexts) >= 2:
@@ -148,9 +174,7 @@ async def query_system(request: Request, payload: QueryRequest):
             contradiction_detected = True
             confidence *= 0.7
 
-    # -------------------------------
-    # STEP 9: Final Confidence Level
-    # -------------------------------
+    # STEP 9: Level
     confidence = max(0.0, min(confidence, 1.0))
 
     if confidence >= 0.75:
@@ -160,9 +184,7 @@ async def query_system(request: Request, payload: QueryRequest):
     else:
         level = "LOW"
 
-    # -------------------------------
     # STEP 10: Citations
-    # -------------------------------
     citations = []
     for idx, (doc, score) in enumerate(results):
         citations.append(
