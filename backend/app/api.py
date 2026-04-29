@@ -1,11 +1,13 @@
 from fastapi import APIRouter, Request, UploadFile, File, HTTPException, Depends
 from fastapi.security import OAuth2PasswordBearer
 from jose import jwt, JWTError
-from security.rate_limit import limiter
+
 import os
 import shutil
 import numpy as np
+import re
 
+from security.rate_limit import limiter
 from app.models import QueryRequest, QueryResponse, Citation
 from app.config import engine
 
@@ -14,51 +16,43 @@ from core.verifier import AnswerVerifier
 from core.scorer import ConfidenceScorer
 from core.hybrid import HybridRetriever
 
-
 # -------------------------------
-# JWT CONFIG
+# AUTH CONFIG
 # -------------------------------
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-this-secret-in-production")
 ALGORITHM = "HS256"
 
+# -------------------------------
+# INPUT SANITIZATION (SQL PROTECTION)
+# -------------------------------
+def sanitize_input(text: str) -> str:
+    text = re.sub(r"(--|\b(SELECT|INSERT|DELETE|UPDATE|DROP|ALTER)\b)", "", text, flags=re.IGNORECASE)
+    return text.strip()
 
-def verify_token(token: str = Depends(oauth2_scheme)):
+# -------------------------------
+# AUTH DEPENDENCY
+# -------------------------------
+def get_current_user(token: str = Depends(oauth2_scheme)):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        return payload
+        return payload.get("sub")
     except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+        raise HTTPException(status_code=401, detail="Invalid token")
 
-
+# -------------------------------
+# ROUTER SETUP
+# -------------------------------
 router = APIRouter()
 generator = GroundedGenerator()
 
 
 # -------------------------------
-# UPLOAD ENDPOINT (UNCHANGED)
+# UPLOAD ENDPOINT
 # -------------------------------
 @router.post("/upload")
 async def upload_document(file: UploadFile = File(...)):
-    # -------------------------------
-    # File Validation (NEW)
-    # -------------------------------
-
-    # Allowed file types
-    allowed_types = ["application/pdf", "text/plain"]
-
-    if file.content_type not in allowed_types:
-        raise HTTPException(status_code=400, detail="Unsupported file type. Only PDF and TXT allowed.")
-
-    # File size check (max 5MB)
-    file.file.seek(0, 2)
-    size = file.file.tell()
-    file.file.seek(0)
-
-    if size > 5 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="File too large. Max size is 5MB.")
-    
     try:
         os.makedirs("data", exist_ok=True)
         file_path = os.path.join("data", file.filename)
@@ -82,14 +76,14 @@ async def upload_document(file: UploadFile = File(...)):
 
 
 # -------------------------------
-# 🔐 PROTECTED QUERY ENDPOINT
+# QUERY ENDPOINT (PROTECTED)
 # -------------------------------
 @router.post("/query", response_model=QueryResponse)
 @limiter.limit("10/minute")
 async def query_system(
     request: Request,
     payload: QueryRequest,
-    user=Depends(verify_token)   # 👈 THIS IS THE MAIN CHANGE
+    user: str = Depends(get_current_user)
 ):
 
     if not engine.is_index_built:
@@ -98,18 +92,29 @@ async def query_system(
             detail="Index not built yet. Upload document first."
         )
 
+    # -------------------------------
+    # INPUT SANITIZATION
+    # -------------------------------
+    clean_question = sanitize_input(payload.question)
+
+    # -------------------------------
     # STEP 1: Dense Retrieval
-    query_embedding = engine.embedder.encode([payload.question])
+    # -------------------------------
+    query_embedding = engine.embedder.encode([clean_question])
     dense_results = engine.retriever.search(query_embedding, top_k=5)
 
     if not dense_results:
         raise HTTPException(status_code=400, detail="No relevant documents found.")
 
-    # STEP 2: BM25
+    # -------------------------------
+    # STEP 2: Keyword Retrieval
+    # -------------------------------
     hybrid_engine = HybridRetriever(engine.retriever.documents)
-    keyword_results = hybrid_engine.keyword_search(payload.question, top_k=5)
+    keyword_results = hybrid_engine.keyword_search(clean_question, top_k=5)
 
-    # STEP 3: Fusion
+    # -------------------------------
+    # STEP 3: Hybrid Fusion
+    # -------------------------------
     combined_scores = {}
 
     for doc, score in dense_results:
@@ -124,7 +129,9 @@ async def query_system(
         reverse=True
     )[:5]
 
+    # -------------------------------
     # STEP 4: Reranking
+    # -------------------------------
     query_vec = query_embedding[0]
 
     reranked = []
@@ -141,15 +148,21 @@ async def query_system(
     contexts = [doc for doc, score in results]
     retrieval_scores = [score for doc, score in results]
 
+    # -------------------------------
     # STEP 5: Generation
-    answer = generator.generate_answer(payload.question, contexts)
+    # -------------------------------
+    answer = generator.generate_answer(clean_question, contexts)
 
+    # -------------------------------
     # STEP 6: Verification
+    # -------------------------------
     verifier = AnswerVerifier()
     support_ratio = verifier.verify(answer, contexts)
     detailed_support = verifier.verify_detailed(answer, contexts)
 
-    # STEP 7: Confidence
+    # -------------------------------
+    # STEP 7: Confidence Scoring
+    # -------------------------------
     scorer = ConfidenceScorer()
     confidence = scorer.score(retrieval_scores, support_ratio)
 
@@ -161,7 +174,9 @@ async def query_system(
     if "Insufficient information" in answer:
         confidence = 0.1
 
-    # STEP 8: Contradiction
+    # -------------------------------
+    # STEP 8: Contradiction Detection
+    # -------------------------------
     contradiction_detected = False
 
     if len(contexts) >= 2:
@@ -174,7 +189,9 @@ async def query_system(
             contradiction_detected = True
             confidence *= 0.7
 
-    # STEP 9: Level
+    # -------------------------------
+    # STEP 9: Final Confidence Level
+    # -------------------------------
     confidence = max(0.0, min(confidence, 1.0))
 
     if confidence >= 0.75:
@@ -184,15 +201,23 @@ async def query_system(
     else:
         level = "LOW"
 
-    # STEP 10: Citations
-    citations = []
-    for idx, (doc, score) in enumerate(results):
-        citations.append(
-            Citation(
-                document="uploaded_doc",
-                chunk_id=idx
-            )
-        )
+    # -------------------------------
+    # STEP 10: Consistency Level
+    # -------------------------------
+    if support_ratio >= 0.75:
+        consistency_level = "HIGH"
+    elif support_ratio >= 0.45:
+        consistency_level = "MEDIUM"
+    else:
+        consistency_level = "LOW"
+
+    # -------------------------------
+    # STEP 11: Citations
+    # -------------------------------
+    citations = [
+        Citation(document="uploaded_doc", chunk_id=i)
+        for i, _ in enumerate(results)
+    ]
 
     return QueryResponse(
         answer=answer,
@@ -200,11 +225,7 @@ async def query_system(
         confidence_score=confidence,
         confidence_level=level,
         consistency_score=support_ratio,
-        consistency_level=(
-            "HIGH" if support_ratio >= 0.75 else
-            "MEDIUM" if support_ratio >= 0.45 else
-            "LOW"
-        ),
+        consistency_level=consistency_level,
         reason=f"Support ratio: {support_ratio:.2f}, Avg retrieval: {avg_retrieval:.2f}",
         contradictions_detected=contradiction_detected,
         claim_support=detailed_support
