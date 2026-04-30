@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import router
@@ -10,13 +10,15 @@ from slowapi import _rate_limit_exceeded_handler
 
 from security.rate_limit import limiter
 
-from fastapi import Request
 
 app = FastAPI(
     title="Trustworthy Knowledge Intelligence Engine",
     version="1.0.0"
 )
 
+# -------------------------------
+# Security Headers Middleware
+# -------------------------------
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
@@ -28,27 +30,10 @@ async def add_security_headers(request: Request, call_next):
 
     return response
 
-# Rate Limiting
-app.state.limiter = limiter
-app.add_exception_handler(
-    RateLimitExceeded,
-    _rate_limit_exceeded_handler
-)
-app.add_middleware(SlowAPIMiddleware)
 
-# Main RAG Routes
-# This brings back /upload and /query
-app.include_router(router)
-
-# Authentication Routes
-# This gives /auth/signup and /auth/login
-app.include_router(
-    auth_router,
-    prefix="/auth",
-    tags=["Authentication"]
-)
-
-# CORS
+# -------------------------------
+# CORS Configuration (IMPORTANT)
+# -------------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -60,7 +45,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# -------------------------------
+# Rate Limiting
+# -------------------------------
+app.state.limiter = limiter
+app.add_exception_handler(
+    RateLimitExceeded,
+    _rate_limit_exceeded_handler
+)
+app.add_middleware(SlowAPIMiddleware)
+
+
+# -------------------------------
+# Routes
+# -------------------------------
+
+# Main RAG routes (/upload, /query)
+app.include_router(router)
+
+# Auth routes (/auth/signup, /auth/login)
+app.include_router(
+    auth_router,
+    prefix="/auth",
+    tags=["Authentication"]
+)
+
+
+# -------------------------------
 # Health Check
+# -------------------------------
 @app.get("/health")
 def health_check():
     return {"status": "ok"}

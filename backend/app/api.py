@@ -53,6 +53,13 @@ generator = GroundedGenerator()
 # -------------------------------
 @router.post("/upload")
 async def upload_document(file: UploadFile = File(...)):
+
+    if not file.filename.endswith((".pdf", ".txt")):
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF and TXT files are supported."
+        )
+
     try:
         os.makedirs("data", exist_ok=True)
         file_path = os.path.join("data", file.filename)
@@ -71,9 +78,11 @@ async def upload_document(file: UploadFile = File(...)):
             "chunks_indexed": len(chunks)
         }
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to process document. Please upload a valid file."
+        )
 
 # -------------------------------
 # QUERY ENDPOINT (PROTECTED)

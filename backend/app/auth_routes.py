@@ -6,9 +6,6 @@ from security.auth import create_access_token
 from security.hashing import hash_password, verify_password
 from security.schemas import LoginRequest, SignupRequest, SignupResponse, TokenResponse
 
-from fastapi import Depends
-from fastapi.security import OAuth2PasswordRequestForm
-
 
 router = APIRouter(tags=["Authentication"])
 
@@ -34,7 +31,8 @@ def signup(payload: SignupRequest) -> SignupResponse:
 	return SignupResponse(message="User created successfully", email=email)
 
 
-
+from fastapi import Depends
+from fastapi.security import OAuth2PasswordRequestForm
 
 
 @router.post("/login", response_model=TokenResponse)
